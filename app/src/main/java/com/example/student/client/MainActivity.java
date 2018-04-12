@@ -2,8 +2,11 @@ package com.example.student.client;
 
 import android.app.ActivityManager;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
+import android.os.BatteryManager;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -13,16 +16,23 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.net.TrafficStats;
 
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.util.HashMap;
+import android.net.NetworkCapabilities;
+
+import static android.content.Context.ACTIVITY_SERVICE;
+import static android.net.TrafficStats.getUidTxBytes;
+import static android.os.Process.myUid;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -33,8 +43,16 @@ public class MainActivity extends AppCompatActivity {
     String user="";
     private InetAddress hostAddress;
     private int hostPort;
-
+    long startTime=0;
+    long endTime=0;
+    long startB=0;
+    long endB=0;
+    long idle1=0;
+    long cpu1=0;
+    long idle2=0;
+    long cpu2=0;
     Socket socket;
+    RandomAccessFile reader;
     DataOutputStream outputStream = null;
     private NsdManager mNsdManager;
     private HashMap<String, serv_Info> hashmap = new HashMap<String, serv_Info>();
@@ -44,7 +62,8 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        mNsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
+
+        mNsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);  // Get Nsd Service
         mNsdManager.discoverServices(SERVICE_TYPE,
                 NsdManager.PROTOCOL_DNS_SD, mDiscoveryListener);
 
@@ -53,7 +72,7 @@ public class MainActivity extends AppCompatActivity {
 
     public void ConnectToService(View v) throws IOException {
         EditText editText = (EditText) findViewById(R.id.editText);
-        Host = editText.getText().toString();
+        Host = editText.getText().toString();                      // Get Host Service name
         final serv_Info s = hashmap.get(Host);
         if (s != null) {
 
@@ -72,6 +91,8 @@ public class MainActivity extends AppCompatActivity {
     }
     public void SetUserName(View v)
     {
+        // Set User Name
+
         EditText editText = (EditText)findViewById(R.id.editText1);
         user=editText.getText().toString();
 
@@ -86,6 +107,7 @@ public class MainActivity extends AppCompatActivity {
         }
         }
 
+        // Start Listener for service
 
     NsdManager.DiscoveryListener mDiscoveryListener = new NsdManager.DiscoveryListener() {
 
@@ -204,58 +226,57 @@ public String GetStatus()
 
     JSONObject jsonObject=null;
    try
-   {RandomAccessFile reader = new RandomAccessFile("/proc/stat", "r");
+   {
 
-    String load = reader.readLine();
-
-    String[] toks = load.split(" +");  // Split on one or more spaces
-
-    long idle1 = Long.parseLong(toks[4]);
-    long cpu1 = Long.parseLong(toks[2]) + Long.parseLong(toks[3]) + Long.parseLong(toks[5])
-            + Long.parseLong(toks[6]) + Long.parseLong(toks[7]) + Long.parseLong(toks[8]);
-
-    try {
-        Thread.sleep(360);
-    } catch (Exception e) {
-    }
-
-    reader.seek(0);
-    load = reader.readLine();
-    reader.close();
-
-    toks = load.split(" +");
-
-    long idle2 = Long.parseLong(toks[4]);
-    long cpu2 = Long.parseLong(toks[2]) + Long.parseLong(toks[3]) + Long.parseLong(toks[5])
-            + Long.parseLong(toks[6]) + Long.parseLong(toks[7]) + Long.parseLong(toks[8]);
-    float cpu_usag = (float) (cpu2 - cpu1) / ((cpu2 + idle2) - (cpu1 + idle1)) * 100;
+       float BW = 0;
+       float cpu_usag=0;   //Computing Bandwidth and cpu usage
+       if(endTime>startTime) {
+           BW = ((float) ((endB - startB)) / (endTime - startTime)) * 1000;
+           cpu_usag = (float) (cpu2 - cpu1) / ((cpu2 + idle2) - (cpu1 + idle1)) * 100;
+       }
 
     ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
     ActivityManager activityManager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
     activityManager.getMemoryInfo(mi);
-    double uedMegs = mi.availMem / 0x100000L;
+    double uedMegs = mi.availMem /1048576L;
+
+       IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+       Intent batteryStatus=this.registerReceiver(null,filter);
+
+       int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+       int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+       float batteryPct = (level / (float)scale)*100;
+
+
+
+
 
 
     jsonObject = new JSONObject();
     jsonObject.put("status", "online");
-    jsonObject.put("cpu", cpu_usag);
+    jsonObject.put("cpu",cpu_usag);
     jsonObject.put("memory", uedMegs);
        jsonObject.put("name",user);
+       jsonObject.put("battery",batteryPct);
+       jsonObject.put("Bandwidth",BW);
+
       return jsonObject.toString();
 
 
-} catch (IOException e) {
+} catch (final Exception e) {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    Toast.makeText(MainActivity.this, "there is an exception", Toast.LENGTH_LONG).show();
+                    Toast.makeText(MainActivity.this, "there is an exception"+e, Toast.LENGTH_LONG).show();
                 }
             });
-        } catch (JSONException e) {
-            e.printStackTrace();
+       return "";
         }
-    return "";
+
+
     }
+
+    //Starting Client Thread
 
     class clientThread extends Thread
     {
@@ -270,25 +291,98 @@ public String GetStatus()
         public void run()
         {
             try {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this,"Connecting",Toast.LENGTH_LONG).show();
+                    }
+                });
                 Socket socket = new Socket(Ip,port);
+
+
                 DataOutputStream outputStream =new DataOutputStream(socket.getOutputStream());
+                DataInputStream inputStream = new DataInputStream(socket.getInputStream());
                 outputStream.writeUTF(user);
-                while (true)
+                String me=inputStream.readUTF();
+                if(me.equals("0"))
                 {
-                    final String Message=GetStatus();
-                    outputStream.writeUTF(Message);
-                    Thread.sleep(500);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                           Toast.makeText(MainActivity.this,"Id is already in used",Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                    Intent intent = getIntent();
+                    finish();
+                    startActivity(intent);
 
                 }
-            } catch (final IOException e) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this,"Connected Sucessfully",Toast.LENGTH_SHORT).show();
+                    }
+                });
+
+                    while (true) {
+                        try {
+
+
+
+                            final String Message = GetStatus();
+                            startTime =  System.currentTimeMillis();
+                            startB = TrafficStats.getUidTxBytes(myUid());
+                            reader = new RandomAccessFile("/proc/stat", "r");
+                            String load = reader.readLine();
+                            String[] toks = load.split(" +");  // Split on one or more spaces
+
+                             idle1 = Long.parseLong(toks[4]);
+                             cpu1 = Long.parseLong(toks[2]) + Long.parseLong(toks[3]) + Long.parseLong(toks[5])
+                                    + Long.parseLong(toks[6]) + Long.parseLong(toks[7]) + Long.parseLong(toks[8]);
+
+
+                            outputStream.writeUTF(Message);
+
+
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                   TextView tv = (TextView) findViewById(R.id.tv);
+                                   tv.setText(Message);
+                                }
+                            });
+                            Thread.sleep(990);
+                            endB = TrafficStats.getUidTxBytes(myUid());
+                            reader.seek(0);
+                            load = reader.readLine();
+                            toks = load.split(" +");
+
+                             idle2 = Long.parseLong(toks[4]);
+                             cpu2 = Long.parseLong(toks[2]) + Long.parseLong(toks[3]) + Long.parseLong(toks[5])
+                                    + Long.parseLong(toks[6]) + Long.parseLong(toks[7]) + Long.parseLong(toks[8]);
+                            reader.close();
+                            endTime=System.currentTimeMillis();
+
+                        }catch (final Exception e)
+                        {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    TextView tv = (TextView) findViewById(R.id.tv);
+                                    tv.setText(e+"");
+                                }
+                            });
+                        }
+
+                    }
+
+            } catch (final Exception e) {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         Toast.makeText(MainActivity.this,""+e,Toast.LENGTH_LONG).show();
                     }
                 });
-            } catch (InterruptedException e) {
-                e.printStackTrace();
             }
         }
 
